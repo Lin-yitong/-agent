@@ -12,7 +12,7 @@ from fastapi import UploadFile
 
 
 ARCHIVE_EXTENSIONS = {".zip", ".rar", ".7z"}
-DOCUMENT_EXTENSIONS = {".pdf", ".xls", ".xlsx", ".doc", ".docx"}
+DOCUMENT_EXTENSIONS = {".pdf", ".xls", ".xlsx", ".doc", ".docx", ".wps"}
 ALLOWED_EXTENSIONS = ARCHIVE_EXTENSIONS | DOCUMENT_EXTENSIONS
 ZIP_UTF8_FLAG = 0x800
 
