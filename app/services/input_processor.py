@@ -161,66 +161,14 @@ class InputProcessor:
             raise InputProcessingError(f"ZIP 文件损坏或无法读取：{archive_path.name}") from exc
 
     def _extract_rar(self, archive_path: Path, target_dir: Path, context: ProcessingContext) -> None:
-        if shutil.which("bsdtar"):
-            self._extract_rar_with_bsdtar(archive_path, target_dir, context)
-            return
-
-        try:
-            import rarfile
-        except ImportError as exc:
-            raise InputProcessingError("RAR 支持需要安装 Python 包 rarfile") from exc
-
-        try:
-            with rarfile.RarFile(archive_path) as archive:
-                for info in archive.infolist():
-                    if should_skip_archive_member(info.filename):
-                        continue
-
-                    member_path = safe_member_path(target_dir, info.filename)
-                    if info.isdir():
-                        member_path.mkdir(parents=True, exist_ok=True)
-                        continue
-
-                    context.count_file()
-                    target_path = unique_path(member_path)
-                    target_path.parent.mkdir(parents=True, exist_ok=True)
-                    with archive.open(info) as source, target_path.open("wb") as destination:
-                        shutil.copyfileobj(source, destination)
-        except rarfile.Error as exc:
-            raise InputProcessingError(f"RAR 文件损坏、无法读取，或缺少 unar/unrar：{archive_path.name}") from exc
-
-    def _extract_rar_with_bsdtar(self, archive_path: Path, target_dir: Path, context: ProcessingContext) -> None:
-        try:
-            listing = subprocess.run(
-                ["bsdtar", "-tf", archive_path.as_posix()],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except subprocess.CalledProcessError as exc:
-            raise InputProcessingError(f"RAR 文件损坏或 bsdtar 无法读取：{archive_path.name}") from exc
-
-        for name in listing.stdout.splitlines():
-            if should_skip_archive_member(name):
-                continue
-
-            safe_member_path(target_dir, name)
-            if not name.endswith("/"):
-                context.count_file()
+        tool = find_rar_tool()
+        if not tool:
+            raise InputProcessingError("RAR 解压需要安装 unar、unrar 或 7z/7zz；当前环境缺少可用工具")
 
         with tempfile.TemporaryDirectory(dir=target_dir) as temp_dir_name:
             temp_dir = Path(temp_dir_name)
-            try:
-                subprocess.run(
-                    ["bsdtar", "-xf", archive_path.as_posix(), "-C", temp_dir.as_posix()],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-            except subprocess.CalledProcessError as exc:
-                raise InputProcessingError(f"RAR 文件解压失败：{archive_path.name}") from exc
-
-            move_extracted_files(temp_dir, target_dir)
+            run_rar_tool(tool, archive_path, temp_dir)
+            move_extracted_files(temp_dir, target_dir, context)
 
     def _extract_7z(self, archive_path: Path, target_dir: Path, context: ProcessingContext) -> None:
         try:
@@ -343,7 +291,39 @@ def should_hide_extracted_path(path: Path, root: Path, relative_path: str) -> bo
     return False
 
 
-def move_extracted_files(source_dir: Path, target_dir: Path) -> None:
+def find_rar_tool() -> str | None:
+    for tool in ("unar", "unrar", "7zz", "7z", "7za"):
+        if shutil.which(tool):
+            return tool
+    return None
+
+
+def run_rar_tool(tool: str, archive_path: Path, target_dir: Path) -> None:
+    if tool == "unar":
+        command = [
+            tool,
+            "-quiet",
+            "-force-skip",
+            "-output-directory",
+            target_dir.as_posix(),
+            archive_path.as_posix(),
+        ]
+    elif tool == "unrar":
+        command = [tool, "x", "-idq", "-o-", archive_path.as_posix(), target_dir.as_posix()]
+    else:
+        command = [tool, "x", "-y", f"-o{target_dir.as_posix()}", archive_path.as_posix()]
+
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip()
+        message = f"RAR 文件解压失败：{archive_path.name}"
+        if detail:
+            message = f"{message}：{detail[:300]}"
+        raise InputProcessingError(message) from exc
+
+
+def move_extracted_files(source_dir: Path, target_dir: Path, context: ProcessingContext) -> None:
     for path in sorted(source_dir.rglob("*"), key=lambda item: item.as_posix()):
         if not path.is_file():
             continue
@@ -352,6 +332,8 @@ def move_extracted_files(source_dir: Path, target_dir: Path) -> None:
         if should_skip_archive_member(relative_path):
             continue
 
+        safe_member_path(target_dir, relative_path)
+        context.count_file()
         target_path = unique_path(target_dir / relative_path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(path.as_posix(), target_path.as_posix())
