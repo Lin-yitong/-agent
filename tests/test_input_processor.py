@@ -15,6 +15,7 @@ from app.services.chunk_processor import (
     TextLine,
     TocChapter,
     extract_doc_lines_with_aspose,
+    extract_docx_lines,
     extract_wps_lines,
     split_by_chapter_pages,
     split_document_sections,
@@ -487,6 +488,28 @@ def test_chunk_docx_preserves_table_order(client: TestClient, tmp_path: Path) ->
     assert first_text.index("表格前正文") < first_text.index("条款号\t条款名称")
     assert first_text.index("1.1.2\t招标人") < first_text.index("表格后正文")
     assert "条款号\t条款名称" not in payload["chunks"][1]["text"]
+
+
+def test_extract_docx_table_skips_repeated_merged_cells(tmp_path: Path) -> None:
+    document = Document()
+    table = document.add_table(rows=2, cols=4)
+    table.cell(0, 0).text = "条款号"
+    table.cell(0, 1).text = "评审因素"
+    table.cell(0, 2).text = "评审标准"
+    table.cell(0, 2).merge(table.cell(0, 3))
+    table.cell(1, 0).text = "2.1.1"
+    table.cell(1, 1).text = "形式评审标准"
+    table.cell(1, 2).text = "投标人名称"
+    table.cell(1, 2).merge(table.cell(1, 3))
+    file_path = tmp_path / "合并单元格.docx"
+    document.save(file_path)
+
+    lines = [line.text for line in extract_docx_lines(file_path)]
+
+    assert lines == [
+        "条款号\t评审因素\t评审标准",
+        "2.1.1\t形式评审标准\t投标人名称",
+    ]
 
 
 def test_chunk_doc_falls_back_to_aspose_when_soffice_fails(

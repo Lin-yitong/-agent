@@ -222,10 +222,22 @@ def extract_docx_lines(file_path: Path) -> list[TextLine]:
                 lines.append(TextLine(text=line))
         elif isinstance(block, Table):
             for row in block.rows:
-                cells = [" ".join(cell.text.split()) for cell in row.cells if cell.text.strip()]
+                cells = [" ".join(cell.text.split()) for cell in unique_row_cells(row) if cell.text.strip()]
                 if cells:
                     lines.append(TextLine(text="\t".join(cells)))
     return lines
+
+
+def unique_row_cells(row: Any) -> list[Any]:
+    cells = []
+    seen_tc_ids = set()
+    for cell in row.cells:
+        tc_id = id(cell._tc)
+        if tc_id in seen_tc_ids:
+            continue
+        seen_tc_ids.add(tc_id)
+        cells.append(cell)
+    return cells
 
 
 def iter_docx_blocks(document: Any) -> Any:
