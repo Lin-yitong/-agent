@@ -9,7 +9,7 @@ from docx import Document
 from openpyxl import Workbook
 
 import app.services.chunk_processor as chunk_processor_module
-from app.main import app, chunk_processor, processor
+from app.main import app, chunk_processor, create_batch_manifest, processor, write_batch_manifest
 from app.services.chunk_processor import (
     ChunkProcessingError,
     TextLine,
@@ -611,3 +611,234 @@ def test_chunk_rejects_unsupported_extension(client: TestClient) -> None:
 
     assert response.status_code == 400
     assert "不支持" in response.json()["detail"]
+
+
+def test_start_bid_chunk_job_chunks_all_chunkable_files(client: TestClient, tmp_path: Path) -> None:
+    document = Document()
+    document.add_paragraph("第一章 招标公告")
+    document.add_paragraph("公告正文")
+    docx_path = tmp_path / "招标文件.docx"
+    document.save(docx_path)
+
+    workbook = Workbook()
+    workbook.active.title = "报价清单"
+    workbook.active.append(["项目", "金额"])
+    workbook.active.append(["施工", 100])
+    xlsx_path = tmp_path / "报价表.xlsx"
+    workbook.save(xlsx_path)
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("docs/招标文件.docx", docx_path.read_bytes())
+        zip_file.writestr("报价表.xlsx", xlsx_path.read_bytes())
+        zip_file.writestr("说明.txt", b"ignore")
+    archive.seek(0)
+
+    upload_response = client.post(
+        "/api/interpretation/v1/upload",
+        files={"file": ("bid.zip", archive.getvalue(), "application/zip")},
+    )
+    bid_id = upload_response.json()["bid_id"]
+
+    start_response = client.post(f"/api/interpretation/v1/bids/{bid_id}/chunk-jobs")
+
+    assert start_response.status_code == 200
+    started = start_response.json()
+    status_response = client.get(started["status_url"])
+    result_response = client.get(started["result_url"])
+    assert status_response.status_code == 200
+    assert result_response.status_code == 200
+    result = result_response.json()
+    assert result["status"] == "completed"
+    assert result["total_files"] == 2
+    assert result["processed_files"] == 2
+    assert [file["relative_path"] for file in result["files"]] == ["docs/招标文件.docx", "报价表.xlsx"]
+    assert [file["chunk_count"] for file in result["files"]] == [1, 1]
+    assert "公告正文" in result["files"][0]["chunks"][0]["text"]
+    assert "施工\t100" in result["files"][1]["chunks"][0]["text"]
+    assert Path(result["files"][0]["chunks_file"]).exists()
+    assert Path(result["files"][1]["chunks_dir"]).is_dir()
+
+
+def test_start_bid_chunk_job_chunks_selected_files_only(client: TestClient, tmp_path: Path) -> None:
+    document = Document()
+    document.add_paragraph("第一章 招标公告")
+    document.add_paragraph("公告正文")
+    docx_path = tmp_path / "招标文件.docx"
+    document.save(docx_path)
+
+    workbook = Workbook()
+    workbook.active.title = "报价清单"
+    workbook.active.append(["项目", "金额"])
+    workbook.active.append(["施工", 100])
+    xlsx_path = tmp_path / "报价表.xlsx"
+    workbook.save(xlsx_path)
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("docs/招标文件.docx", docx_path.read_bytes())
+        zip_file.writestr("报价表.xlsx", xlsx_path.read_bytes())
+    archive.seek(0)
+
+    upload_response = client.post(
+        "/api/interpretation/v1/upload",
+        files={"file": ("bid.zip", archive.getvalue(), "application/zip")},
+    )
+    bid_id = upload_response.json()["bid_id"]
+
+    start_response = client.post(
+        f"/api/interpretation/v1/bids/{bid_id}/chunk-jobs",
+        json={"relative_paths": ["报价表.xlsx"]},
+    )
+
+    assert start_response.status_code == 200
+    result = client.get(start_response.json()["result_url"]).json()
+    assert result["status"] == "completed"
+    assert result["total_files"] == 1
+    assert result["processed_files"] == 1
+    assert [file["relative_path"] for file in result["files"]] == ["报价表.xlsx"]
+    assert "施工\t100" in result["files"][0]["chunks"][0]["text"]
+
+
+def test_start_bid_chunk_job_rejects_empty_selection(client: TestClient) -> None:
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("招标文件.pdf", b"fake pdf")
+    archive.seek(0)
+
+    upload_response = client.post(
+        "/api/interpretation/v1/upload",
+        files={"file": ("bid.zip", archive.getvalue(), "application/zip")},
+    )
+    bid_id = upload_response.json()["bid_id"]
+
+    response = client.post(
+        f"/api/interpretation/v1/bids/{bid_id}/chunk-jobs",
+        json={"relative_paths": []},
+    )
+
+    assert response.status_code == 400
+    assert "请选择至少一个需要切片的文件" in response.json()["detail"]
+
+
+def test_start_bid_chunk_job_rejects_missing_selected_file(client: TestClient) -> None:
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("招标文件.pdf", b"fake pdf")
+    archive.seek(0)
+
+    upload_response = client.post(
+        "/api/interpretation/v1/upload",
+        files={"file": ("bid.zip", archive.getvalue(), "application/zip")},
+    )
+    bid_id = upload_response.json()["bid_id"]
+
+    response = client.post(
+        f"/api/interpretation/v1/bids/{bid_id}/chunk-jobs",
+        json={"relative_paths": ["不存在.pdf"]},
+    )
+
+    assert response.status_code == 400
+    assert "选择的文件不存在：不存在.pdf" in response.json()["detail"]
+
+
+def test_start_bid_chunk_job_rejects_unsupported_selected_file(client: TestClient) -> None:
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("说明.txt", b"ignore")
+    archive.seek(0)
+
+    upload_response = client.post(
+        "/api/interpretation/v1/upload",
+        files={"file": ("bid.zip", archive.getvalue(), "application/zip")},
+    )
+    bid_id = upload_response.json()["bid_id"]
+
+    response = client.post(
+        f"/api/interpretation/v1/bids/{bid_id}/chunk-jobs",
+        json={"relative_paths": ["说明.txt"]},
+    )
+
+    assert response.status_code == 400
+    assert "选择的文件不支持切片：说明.txt" in response.json()["detail"]
+
+
+def test_bid_chunk_job_stops_on_first_failed_file(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = Document()
+    document.add_paragraph("第一章 招标公告")
+    docx_path = tmp_path / "招标文件.docx"
+    document.save(docx_path)
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("01.docx", docx_path.read_bytes())
+        zip_file.writestr("02.docx", docx_path.read_bytes())
+    archive.seek(0)
+
+    upload_response = client.post(
+        "/api/interpretation/v1/upload",
+        files={"file": ("bid.zip", archive.getvalue(), "application/zip")},
+    )
+    bid_id = upload_response.json()["bid_id"]
+    original_process_file_path = chunk_processor.process_file_path
+
+    def fake_process_file_path(*args: object, **kwargs: object) -> dict:
+        file_path = kwargs["file_path"]
+        if Path(file_path).name == "02.docx":
+            raise ChunkProcessingError("模拟第二个文件失败")
+        return original_process_file_path(*args, **kwargs)
+
+    monkeypatch.setattr(chunk_processor, "process_file_path", fake_process_file_path)
+
+    start_response = client.post(f"/api/interpretation/v1/bids/{bid_id}/chunk-jobs")
+
+    assert start_response.status_code == 200
+    result = client.get(start_response.json()["result_url"]).json()
+    assert result["status"] == "failed"
+    assert result["processed_files"] == 1
+    assert len(result["files"]) == 1
+    assert result["error"]["relative_path"] == "02.docx"
+    assert "模拟第二个文件失败" in result["error"]["message"]
+
+
+def test_start_bid_chunk_job_rejects_missing_bid(client: TestClient) -> None:
+    response = client.post("/api/interpretation/v1/bids/missing/chunk-jobs")
+
+    assert response.status_code == 404
+    assert "bid_id 不存在" in response.json()["detail"]
+
+
+def test_start_bid_chunk_job_rejects_when_no_chunkable_files(client: TestClient) -> None:
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("说明.txt", b"ignore")
+    archive.seek(0)
+
+    upload_response = client.post(
+        "/api/interpretation/v1/upload",
+        files={"file": ("bid.zip", archive.getvalue(), "application/zip")},
+    )
+    bid_id = upload_response.json()["bid_id"]
+
+    response = client.post(f"/api/interpretation/v1/bids/{bid_id}/chunk-jobs")
+
+    assert response.status_code == 400
+    assert "没有可切片文件" in response.json()["detail"]
+
+
+def test_bid_chunk_job_result_rejects_unfinished_job(client: TestClient) -> None:
+    manifest = create_batch_manifest(
+        bid_id="test-bid",
+        batch_chunk_job_id="test-job",
+        total_files=1,
+    )
+    write_batch_manifest(manifest)
+
+    response = client.get("/api/interpretation/v1/bids/test-bid/chunk-jobs/test-job/result")
+
+    assert response.status_code == 400
+    assert "尚未完成" in response.json()["detail"]

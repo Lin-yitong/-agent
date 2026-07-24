@@ -1,6 +1,6 @@
 # Bid Interpretation Agent
 
-标书解读 agent 的输入处理层，当前实现上传、递归解压、文件目录展示，以及独立的单文件切片预览。
+标书解读 agent 的输入处理层，当前实现上传、递归解压、文件目录展示、独立的单文件切片预览，以及按 `bid_id` 对解包文件进行批量切片。
 
 ## Run
 
@@ -28,6 +28,7 @@ python3 -m venv .venv
 页面包含两个功能区：
 
 - 上传并解包：上传单文件或压缩包，展示解包后的目录树。
+- 批量切片：上传并解包后，勾选目录树中的文件，点击“切片所选文件”异步切片。
 - 单文件切片：单独上传 `.pdf/.doc/.docx/.wps/.xls/.xlsx`，展示可展开的切片结果。
 
 ### 局域网测试
@@ -98,6 +99,30 @@ ipconfig
   - Word/PDF 优先按目录里的一级章切片；Excel 按工作表切片。
   - 每次切片会生成 `chunk_job_id`，并把结果保存到 `storage/chunks/`。
 
+- `POST /api/interpretation/v1/bids/{bid_id}/chunk-jobs`
+  - 对已解包的 `bid_id` 启动异步批量切片任务。
+  - 只处理 `.pdf/.doc/.docx/.wps/.xls/.xlsx`。
+  - 不传请求体时默认切片全部可切片文件。
+  - 传 JSON 请求体时只切片选中的文件：
+
+```json
+{
+  "relative_paths": [
+    "第一章/招标公告.pdf",
+    "第六章 技术标准和要求/技术规范书.docx"
+  ]
+}
+```
+
+  - 返回 `batch_chunk_job_id`、`status_url`、`result_url`。
+
+- `GET /api/interpretation/v1/bids/{bid_id}/chunk-jobs/{batch_chunk_job_id}`
+  - 查询批量切片任务状态和进度。
+
+- `GET /api/interpretation/v1/bids/{bid_id}/chunk-jobs/{batch_chunk_job_id}/result`
+  - 获取批量切片结果。
+  - 任务未完成时返回明确错误。
+
 ## Supported Input
 
 - 压缩包：`.zip`、`.rar`、`.7z`
@@ -137,6 +162,24 @@ storage/chunks/
 - `original/` 保存本次上传的原始文件。
 - `chunks.json` 保存完整接口返回结果。
 - `chunks/` 下每个 `.md` 文件对应一个具体切片，方便人工打开查看。
+
+批量切片结果会落盘到：
+
+```text
+storage/chunks/
+└── batches/
+    └── {batch_chunk_job_id}/
+        ├── manifest.json
+        └── files/
+            ├── 001_招标公告/
+            │   ├── chunks.json
+            │   └── chunks/
+            └── 002_报价表/
+                ├── chunks.json
+                └── chunks/
+```
+
+第一版批量切片采用“遇错中断”：某个文件失败后任务状态变为 `failed`，已成功文件的结果会保留在 `manifest.json` 和对应文件目录中。
 
 `.rar` 需要系统安装 `unar`、`unrar` 或 `7z/7zz`。不建议使用 `bsdtar` 解 RAR5，可能出现目录不完整。
 

@@ -63,6 +63,35 @@ class ChunkProcessor:
         if not filename:
             raise ChunkProcessingError("上传文件名不能为空")
 
+        chunk_job_id = str(uuid.uuid4())
+        file_dir = self.storage_root / chunk_job_id / safe_path_name(Path(filename).stem)
+        original_dir = file_dir / "original"
+        original_dir.mkdir(parents=True, exist_ok=True)
+
+        file_path = original_dir / filename
+        with file_path.open("wb") as destination:
+            while chunk := await upload.read(1024 * 1024):
+                destination.write(chunk)
+
+        return self.process_file_path(
+            file_path=file_path,
+            filename=filename,
+            file_dir=file_dir,
+            chunk_job_id=chunk_job_id,
+            max_chunk_chars=max_chunk_chars,
+            include_text=include_text,
+        )
+
+    def process_file_path(
+        self,
+        file_path: Path,
+        filename: str | None = None,
+        file_dir: Path | None = None,
+        chunk_job_id: str | None = None,
+        max_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS,
+        include_text: bool = True,
+    ) -> dict[str, Any]:
+        filename = filename or file_path.name
         extension = Path(filename.lower()).suffix
         if extension not in CHUNKABLE_EXTENSIONS:
             raise ChunkProcessingError(f"不支持的文件格式：{extension or '无扩展名'}")
@@ -70,17 +99,10 @@ class ChunkProcessor:
         if max_chunk_chars <= 0:
             raise ChunkProcessingError("max_chunk_chars 必须大于 0")
 
-        chunk_job_id = str(uuid.uuid4())
-        file_dir = self.storage_root / chunk_job_id / safe_path_name(Path(filename).stem)
-        original_dir = file_dir / "original"
+        chunk_job_id = chunk_job_id or str(uuid.uuid4())
+        file_dir = file_dir or self.storage_root / chunk_job_id / safe_path_name(Path(filename).stem)
         chunk_dir = file_dir / "chunks"
-        original_dir.mkdir(parents=True, exist_ok=True)
         chunk_dir.mkdir(parents=True, exist_ok=True)
-
-        file_path = original_dir / filename
-        with file_path.open("wb") as destination:
-            while chunk := await upload.read(1024 * 1024):
-                destination.write(chunk)
 
         with tempfile.TemporaryDirectory(prefix="bid-chunk-") as temp_dir_name:
             temp_dir = Path(temp_dir_name)
