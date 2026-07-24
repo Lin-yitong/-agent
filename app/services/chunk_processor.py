@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 CHUNKABLE_EXTENSIONS = {".pdf", ".doc", ".docx", ".wps", ".xls", ".xlsx"}
 DEFAULT_MAX_CHUNK_CHARS = 200000
 CHAPTER_HEADING_PATTERN = re.compile(r"^\s*(第\s*[一二三四五六七八九十百千万零〇两\d]+\s*章)\s*(.+?)\s*$")
+TOC_PAGE_NUMBER_PATTERN = re.compile(r"(?:\s*[\.·…．。]{2,}\s*|\s+)\d+\s*$")
 LEVEL_1_HEADING_PATTERN = re.compile(
     r"^\s*(?:"
     r"第\s*[一二三四五六七八九十百千万零〇两\d]+\s*章"
@@ -750,13 +751,15 @@ def extract_toc_chapters(lines: list[TextLine], toc_index: int) -> tuple[list[To
             continue
 
         if chapters:
+            if has_toc_page_number(line.text):
+                non_chapter_count = 0
+                toc_end_index = index
+                continue
+
             non_chapter_count += 1
-            toc_end_index = index
             if non_chapter_count >= 5:
                 break
 
-    while toc_end_index > toc_index and not parse_chapter_line(lines[toc_end_index].text):
-        toc_end_index -= 1
     return chapters, toc_end_index
 
 
@@ -802,9 +805,12 @@ def line_matches_toc_chapter(text: str, chapter: TocChapter) -> bool:
 
 def strip_toc_page_number(text: str) -> str:
     stripped = text.strip()
-    stripped = re.sub(r"\s*[\.·…．。]{2,}\s*\d+\s*$", "", stripped)
-    stripped = re.sub(r"\s+\d+\s*$", "", stripped)
+    stripped = TOC_PAGE_NUMBER_PATTERN.sub("", stripped)
     return stripped.strip()
+
+
+def has_toc_page_number(text: str) -> bool:
+    return bool(TOC_PAGE_NUMBER_PATTERN.search(text.strip()))
 
 
 def parse_chapter_ordinal(chapter_mark: str) -> int | None:

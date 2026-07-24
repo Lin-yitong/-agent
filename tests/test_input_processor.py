@@ -385,6 +385,76 @@ def test_toc_chapters_handle_starred_title_and_skip_embedded_chapter_list() -> N
     assert "第五章正文" in "\n".join(line.text for line in sections[5].lines)
 
 
+def test_toc_chapters_keep_scanning_past_numbered_subsections_with_pages() -> None:
+    lines = [
+        TextLine("中国工商银行青海省分行西宁住房公积金管理中心数字公积金项目"),
+        TextLine("目录"),
+        TextLine("第一章  招标公告\t5"),
+        TextLine("1.  招标条件\t5"),
+        TextLine("2.  项目概况与招标范围\t5"),
+        TextLine("3.  投标人资格要求\t5"),
+        TextLine("4.  招标文件的获取\t6"),
+        TextLine("5.  投标文件的递交\t7"),
+        TextLine("6.其他事项\t7"),
+        TextLine("7.发布公告的媒介\t7"),
+        TextLine("8.  联系方式\t7"),
+        TextLine("第二章  投标人须知\t8"),
+        TextLine("投标人须知前附表\t8"),
+        TextLine("1.  总则\t12"),
+        TextLine("1.1  招标项目概况\t12"),
+        TextLine("第三章  评标办法（综合评估法）\t27"),
+        TextLine("评标办法前附表\t27"),
+        TextLine("第四章  合同条款及格式\t33"),
+        TextLine("第五章 招标要求\t66"),
+        TextLine("一、软硬件集成需求\t66"),
+        TextLine("二、软硬件技术要求及技术指标\t67"),
+        TextLine("服务要求说明书\t90"),
+        TextLine("第六章  投标文件格式\t92"),
+        TextLine("一、投标函\t94"),
+        TextLine("二、开标一览表（报价表）\t95"),
+        TextLine("第一章  招标公告"),
+        TextLine("第一章正文"),
+        TextLine("第一章正文补充1"),
+        TextLine("第一章正文补充2"),
+        TextLine("第二章  投标人须知"),
+        TextLine("第二章正文"),
+        TextLine("第二章正文补充1"),
+        TextLine("第二章正文补充2"),
+        TextLine("第三章  评标办法（综合评估法）"),
+        TextLine("第三章正文"),
+        TextLine("第三章正文补充1"),
+        TextLine("第三章正文补充2"),
+        TextLine("第四章  合同条款及格式"),
+        TextLine("第四章正文"),
+        TextLine("第四章正文补充1"),
+        TextLine("第四章正文补充2"),
+        TextLine("第五章 招标要求"),
+        TextLine("第五章正文"),
+        TextLine("第五章正文补充1"),
+        TextLine("第五章正文补充2"),
+        TextLine("第六章  投标文件格式"),
+        TextLine("第六章正文"),
+    ]
+
+    sections, warnings, strategy = split_document_sections(lines, "工商银行项目.doc")
+
+    assert strategy == "toc_chapter"
+    assert warnings == []
+    assert [section.title for section in sections] == [
+        "封面",
+        "第一章 招标公告",
+        "第二章 投标人须知",
+        "第三章 评标办法（综合评估法）",
+        "第四章 合同条款及格式",
+        "第五章 招标要求",
+        "第六章 投标文件格式",
+    ]
+    assert sections[1].lines[0].text == "第一章  招标公告"
+    assert sections[2].lines[0].text == "第二章  投标人须知"
+    assert "1.  招标条件\t5" not in "\n".join(line.text for line in sections[1].lines)
+    assert "第六章正文" in "\n".join(line.text for line in sections[6].lines)
+
+
 def test_chunk_docx_preserves_table_order(client: TestClient, tmp_path: Path) -> None:
     document = Document()
     document.add_paragraph("第一章 招标公告")
